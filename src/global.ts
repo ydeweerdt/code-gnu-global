@@ -1,5 +1,9 @@
 var exec = require('child-process-promise').exec;
 var iconv = require('iconv-lite');
+var path = require('path');
+var fs = require('fs');
+var glob = require('glob');
+
 import * as vscode from 'vscode';
 
 function execute(command: string): Promise<Buffer> {
@@ -27,17 +31,69 @@ function execute(command: string): Promise<Buffer> {
 };
 
 export class Global {
-    exec: string;
+    execGlobal: string;
+    execGtags: string;
+    useCompileCommands: Boolean;
+    compileCommandsJson: string;
+    gtagsFile: string;
 
     run(params: string[]): Promise<Buffer> {
-        return execute(this.exec + ' ' + params.join(' '));
+        return execute(this.execGlobal + ' ' + params.join(' '));
+    }
+
+    buildDataBase()
+    {
+        let compileCommandsText = fs.readFileSync(this.compileCommandsJson);
+        let compileCommands = JSON.parse(compileCommandsText);
+        const reInclude = /-I([^\s]*)/g;
+
+        let includeDirs = {};
+
+        fs.writeFileSync(this.gtagsFile, '');
+
+        compileCommands.forEach((cu) => {
+            fs.appendFileSync(this.gtagsFile, cu.file + '\n');
+
+            let match;
+            while (match = reInclude.exec(cu.command))
+            {
+                includeDirs[match[1]] = 1;
+            }
+        });
+
+        let includeFiles = {};
+
+        for (var dir in includeDirs)
+        {
+            let files = glob.sync("**/*.{h,hpp}", {cwd : dir, realpath: true});
+            files.forEach((file) =>
+            {
+                includeFiles[file] = 1;
+            });
+        }
+
+        for (var file in includeFiles)
+        {
+            fs.appendFileSync(this.gtagsFile, file + '\n');
+        }
+        return execute(this.execGtags + ' -f ' + this.gtagsFile);
     }
 
     updateTags() {
         var configuration = vscode.workspace.getConfiguration('codegnuglobal');
         var shouldupdate = configuration.get<boolean>('autoupdate', true);
-        if (shouldupdate) {
+        var useCompileCommands = configuration.get<Boolean>('compile_commands.enable', false);
+
+        if (shouldupdate && !useCompileCommands) {
             this.run(['-u']);
+        }
+        else if (useCompileCommands)
+        {
+            try {
+                this.buildDataBase();
+            } catch(err) {
+                console.log('Error building data base: ' + err);
+            }
         }
     }
 
@@ -73,7 +129,11 @@ export class Global {
         return kind;
     }
 
-    constructor(exec: string) {
-        this.exec = exec;
+    constructor(execGlobal: string, execGtags: string, useCompileCommands: Boolean, compileCommandsJson: string) {
+        this.execGlobal = execGlobal;
+        this.execGtags = execGtags;
+        this.useCompileCommands = useCompileCommands;
+        this.compileCommandsJson = compileCommandsJson;
+        this.gtagsFile = path.join(vscode.workspace.rootPath, '.vscode', 'gtags.files');
     }
 }
